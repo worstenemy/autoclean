@@ -1,43 +1,60 @@
 package we.clean;
 
 import java.lang.ref.PhantomReference;
+import java.lang.ref.Reference;
 import java.lang.ref.ReferenceQueue;
-import java.util.Objects;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 public class AutoCleaner {
-	private AutoCleaner() {
-		throw new RuntimeException();
-	}
+  private AutoCleaner() {
+    throw new RuntimeException();
+  }
 
-	public interface CleanUp {
-		void clean();
-	}
+  public interface CleanUp {
+    void clean();
+  }
 
-	private static class Node extends PhantomReference<Object> implements CleanUp {
-		private CleanUp cleanUp;
 
-		public Node(Object referent, ReferenceQueue<? super Object> q, CleanUp cleanUp) {
-			super(referent, q);
-			this.cleanUp = Objects.requireNonNull(cleanUp);
-		}
+  private static final AtomicBoolean STARTED = new AtomicBoolean(false);
 
-		@Override
-		public void clean() {
-			this.cleanUp.clean();
-			this.cleanUp = null;
-			// clear referent
-			super.clear();
-		}
-	}
+  private static final ConcurrentHashMap<Reference<?>, CleanUp> CLEAN_UP_MAPPING =
+    new ConcurrentHashMap<>(64);
 
-	private static final AtomicBoolean STARTED = new AtomicBoolean(false);
+  private static final ReferenceQueue<Object> REFERENCE_QUEUE = new ReferenceQueue<>();
 
-	private static final ReferenceQueue<Node> QUEUE = new ReferenceQueue<>();
+  private static final CleanThread THREAD = new CleanThread();
 
-	private static void init() {
-		if (STARTED.compareAndSet(false, true)) {
+  public static void register(Object watcher, CleanUp cleanUp) {
+    init();
+    PhantomReference<Object> reference = new PhantomReference<>(watcher, REFERENCE_QUEUE);
+    CLEAN_UP_MAPPING.putIfAbsent(reference, cleanUp);
+  }
 
-		}
-	}
+  private static void init() {
+    if (STARTED.compareAndSet(false, true)) {
+      THREAD.start();
+    }
+  }
+
+  private static class CleanThread extends Thread {
+    @Override
+    public void run() {
+      while (!Thread.currentThread().isInterrupted()) {
+        Reference<?> reference;
+        try {
+          reference = REFERENCE_QUEUE.remove();
+          if (null != reference) {
+            CleanUp cleanUp = CLEAN_UP_MAPPING.remove(reference);
+            if (null != cleanUp) {
+              cleanUp.clean();
+            }
+            reference.clear();
+          }
+        } catch (InterruptedException e) {
+          break;
+        }
+      }
+    }
+  }
 }
