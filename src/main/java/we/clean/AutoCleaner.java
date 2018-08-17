@@ -41,19 +41,22 @@ public class AutoCleaner {
     @Override
     public void run() {
       while (!Thread.currentThread().isInterrupted()) {
-        Reference<?> reference;
         try {
-          reference = REFERENCE_QUEUE.remove();
-          if (null != reference) {
-            CleanUp cleanUp = CLEAN_UP_MAPPING.remove(reference);
-            if (null != cleanUp) {
-              cleanUp.clean();
-            }
-            reference.clear();
-          }
+          runInternal();
         } catch (InterruptedException e) {
           break;
         }
+      }
+    }
+
+    private void runInternal() throws InterruptedException {
+      Reference<?> reference = REFERENCE_QUEUE.remove();
+      if (null != reference) {
+        CleanUp cleanUp = CLEAN_UP_MAPPING.remove(reference);
+        if (null != cleanUp) {
+          cleanUp.clean();
+        }
+        reference.clear();
       }
     }
   }
