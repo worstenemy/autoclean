@@ -1,62 +1,100 @@
 package we.clean;
 
 import java.lang.ref.PhantomReference;
-import java.lang.ref.Reference;
 import java.lang.ref.ReferenceQueue;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicBoolean;
 
-public class AutoCleaner {
-  private AutoCleaner() {
-    throw new RuntimeException();
+public class AutoCleaner extends PhantomReference<Object> implements Runnable {
+  private static final ReferenceQueue<Object> QUEUE = new ReferenceQueue<>();
+
+  private static final Cleaner CLEANER;
+
+  static {
+    CLEANER = new Cleaner();
+    CLEANER.start();
   }
 
-  public interface CleanUp {
-    void clean();
+  private static AutoCleaner head;
+
+  private final Runnable runnable;
+
+  private AutoCleaner next;
+
+  private AutoCleaner prev;
+
+  private AutoCleaner(Object referent, ReferenceQueue<? super Object> q, Runnable runnable) {
+    super(referent, q);
+    this.runnable = runnable;
   }
 
-
-  private static final AtomicBoolean STARTED = new AtomicBoolean(false);
-
-  private static final ConcurrentHashMap<Reference<?>, CleanUp> CLEAN_UP_MAPPING =
-    new ConcurrentHashMap<>(64);
-
-  private static final ReferenceQueue<Object> REFERENCE_QUEUE = new ReferenceQueue<>();
-
-  private static final CleanThread THREAD = new CleanThread();
-
-  public static void register(Object watcher, CleanUp cleanUp) {
-    init();
-    PhantomReference<Object> reference = new PhantomReference<>(watcher, REFERENCE_QUEUE);
-    CLEAN_UP_MAPPING.putIfAbsent(reference, cleanUp);
+  public static void register(Object referent, Runnable runnable) {
+    AutoCleaner cleaner = new AutoCleaner(referent, QUEUE, runnable);
+    enqueue(cleaner);
   }
 
-  private static void init() {
-    if (STARTED.compareAndSet(false, true)) {
-      THREAD.start();
+  private static void enqueue(AutoCleaner cleaner) {
+    synchronized (AutoCleaner.class) {
+      if (null != head) {
+        cleaner.next = head;
+        head.prev = cleaner;
+      }
+      head = cleaner;
     }
   }
 
-  private static class CleanThread extends Thread {
+  private static boolean dequeue(AutoCleaner cleaner) {
+    if (null == cleaner) {
+      return false;
+    }
+    synchronized (AutoCleaner.class) {
+      // already dequeue
+      if (cleaner.next == cleaner) {
+        return false;
+      }
+
+      //adjust head
+      if (head == cleaner) {
+        if (null != cleaner.next) {
+          head = cleaner.next;
+        } else {
+          head = cleaner.prev;
+        }
+      }
+
+      if (null != cleaner.next) {
+        cleaner.next.prev = cleaner.prev;
+      }
+
+      if (null != cleaner.prev) {
+        cleaner.prev.next = cleaner.next;
+      }
+
+      cleaner.next = cleaner;
+      cleaner.prev = cleaner;
+      return true;
+    }
+  }
+
+  @Override
+  public void run() {
+    if (dequeue(this)) {
+      try {
+        this.runnable.run();
+      } catch (Exception ignored) {
+      }
+    }
+  }
+
+  private static class Cleaner extends Thread {
     @Override
     public void run() {
       while (!Thread.currentThread().isInterrupted()) {
         try {
-          runInternal();
+          AutoCleaner cleaner = (AutoCleaner) QUEUE.remove();
+          cleaner.run();
+          cleaner.clear();
         } catch (InterruptedException e) {
-          break;
+          Thread.currentThread().interrupt();
         }
-      }
-    }
-
-    private void runInternal() throws InterruptedException {
-      Reference<?> reference = REFERENCE_QUEUE.remove();
-      if (null != reference) {
-        CleanUp cleanUp = CLEAN_UP_MAPPING.remove(reference);
-        if (null != cleanUp) {
-          cleanUp.clean();
-        }
-        reference.clear();
       }
     }
   }
